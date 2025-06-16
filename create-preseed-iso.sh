@@ -133,7 +133,7 @@ if [ ! -f "$ISO_FILE" ]; then
       echo "All automatic downloads failed. You can manually download from:"
       echo "https://www.debian.org/CD/netinst/"
       echo "Save it as: $ISO_FILE"
-      read -p "Press Enter after manually downloading the ISO, or Ctrl+C to exit..."
+      read -r -p "Press Enter after manually downloading the ISO, or Ctrl+C to exit..."
       if [ ! -f "$ISO_FILE" ]; then
         echo "ISO file still not found. Exiting."
         exit 1
@@ -438,9 +438,7 @@ if command -v xorriso >/dev/null 2>&1; then
   XORRISO_CMD="$XORRISO_CMD -isohybrid-gpt-basdat -isohybrid-apm-hfsplus \"$BASE_DIR/newiso\""
   
   echo "Executing: $XORRISO_CMD"
-  eval $XORRISO_CMD
-  
-  if [ $? -eq 0 ]; then
+  if eval "$XORRISO_CMD"; then
     echo "ISO created successfully with xorriso"
   else
     echo "xorriso failed, trying alternative method..."
@@ -506,9 +504,9 @@ echo "Creation of bootable ISO image completed: $OUTPUT_ISO"
 if [ -f "$OUTPUT_ISO" ]; then
   SIZE=$(stat -f%z "$OUTPUT_ISO" 2>/dev/null || stat -c%s "$OUTPUT_ISO" 2>/dev/null || echo 0)
   if [ "$SIZE" -gt 100000000 ]; then  # 100MB minimum
-    echo "ISO verification: OK (Size: $(($SIZE / 1024 / 1024))MB)"
+    echo "ISO verification: OK (Size: $((SIZE / 1024 / 1024))MB)"
   else
-    echo "Warning: ISO seems too small ($(($SIZE / 1024 / 1024))MB)"
+    echo "Warning: ISO seems too small ($((SIZE / 1024 / 1024))MB)"
   fi
 else
   echo "Error: ISO file was not created"
@@ -525,7 +523,7 @@ if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then
   lsblk -d -o NAME,SIZE,TYPE,MODEL | grep -E 'disk'
   
   # Let user select drive
-  read -p "Enter the device name (e.g., sdc): " USB_DEVICE
+  read -r -p "Enter the device name (e.g., sdc): " USB_DEVICE
   USB_DRIVE="/dev/$USB_DEVICE"
   
   if [ ! -b "$USB_DRIVE" ]; then
