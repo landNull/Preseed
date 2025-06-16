@@ -7,7 +7,7 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 
 # Define base directory
-BASE_DIR=/home/landnull/apps/Preseed
+BASE_DIR=/home/landnull/Downloads/Distros/Debian/Preseed
 
 # Function to request and execute with sudo privileges
 require_sudo() {
@@ -32,10 +32,10 @@ fi
 # Check and create directory structure with proper permissions
 echo "Starting directory structure creation..."
 if [ ! -d "$BASE_DIR" ]; then
-  require_sudo "mkdir -p \"$BASE_DIR/origiso\" \"$BASE_DIR/mount\" \"$BASE_DIR/newiso/isolinux\" && chown -R landnull:landnull \"$BASE_DIR\" && chmod -R u+rwX \"$BASE_DIR\""
+  require_sudo "mkdir -p \"$BASE_DIR/origiso\" \"$BASE_DIR/mount\" \"$BASE_DIR/newiso/isolinux\" \"$BASE_DIR/preseediso\" && chown -R landnull:landnull \"$BASE_DIR\" && chmod -R u+rwX \"$BASE_DIR\""
 else
   # Ensure all required directories exist
-  mkdir -p "$BASE_DIR/origiso" "$BASE_DIR/mount" "$BASE_DIR/newiso/isolinux"
+  mkdir -p "$BASE_DIR/origiso" "$BASE_DIR/mount" "$BASE_DIR/newiso/isolinux" "$BASE_DIR/preseediso"
 fi
 echo "Directory structure creation completed."
 
@@ -385,7 +385,7 @@ echo "Modification of boot configuration completed."
 echo "Starting creation of bootable ISO image with UEFI support..."
 
 # Verify required files exist
-if [ ! -f "$BASE_DIR/newiso/isolinux/isolinux.bin" ]; then
+if [ -f "$BASE_DIR/newiso/isolinux/isolinux.bin" ]; then
   echo "Warning: isolinux.bin not found, BIOS boot may not work"
 fi
 
@@ -395,7 +395,7 @@ if [ ! -f "$BASE_DIR/newiso/boot/grub/efi.img" ] && [ ! -d "$BASE_DIR/newiso/EFI
   find "$BASE_DIR/newiso" -name "*efi*" -o -name "*EFI*" | head -10
 fi
 
-OUTPUT_ISO="$BASE_DIR/preseed-debian-$(date +%Y%m%d-%H%M).iso"
+OUTPUT_ISO="$BASE_DIR/preseediso/preseed-debian-$(date +%Y%m%d-%H%M).iso"
 
 # Create the ISO with both BIOS and UEFI support
 echo "Creating hybrid ISO with BIOS and UEFI support..."
