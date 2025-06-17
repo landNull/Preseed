@@ -4,7 +4,7 @@
 # Hostname: knarr.star
 # CPU: 8-core AMD FX-8320E
 # RAM: 32GB
-# Updated to run Gitea as k3s pod with proper domain configuration
+# Updated to run all Gitea dependencies as k3s pods
 
 set -euo pipefail
 
@@ -30,7 +30,7 @@ error() {
 }
 
 # Progress tracking
-TOTAL_STEPS=22
+TOTAL_STEPS=20
 CURRENT_STEP=0
 
 progress() {
@@ -71,14 +71,6 @@ if ! command -v dbus-daemon &>/dev/null; then
 fi
 systemctl start dbus
 wait_for_service dbus
-
-progress "Verifying RAID setup"
-if ! mdadm --detail /dev/md0 &>/dev/null || ! mdadm --detail /dev/md1 &>/dev/null; then
-    warn "RAID arrays /dev/md0 or /dev/md1 not found or not active"
-    log "Attempting to assemble RAID arrays..."
-    mdadm --assemble --scan || error "Failed to assemble RAID arrays"
-fi
-log "RAID arrays verified: $(mdadm --detail /dev/md0 | grep 'State' | awk '{print $3}'), $(mdadm --detail /dev/md1 | grep 'State' | awk '{print $3}')"
 
 # Create backup directory for original configs
 BACKUP_DIR="/root/config_backups_$(date +%Y%m%d_%H%M%S)"
@@ -167,6 +159,24 @@ apply_k8s_manifest() {
     error "Failed to apply manifest after $max_attempts attempts: $manifest_file"
 }
 
+# Function to wait for pod to be ready
+wait_for_pod() {
+    local pod_selector="$1"
+    local namespace="$2"
+    local max_attempts="${3:-60}"
+    
+    log "Waiting for pods matching '$pod_selector' in namespace '$namespace'..."
+    for i in $(seq 1 $max_attempts); do
+        if kubectl get pods -n "$namespace" -l "$pod_selector" --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -q .; then
+            log "Pod(s) matching '$pod_selector' are running"
+            return 0
+        fi
+        log "Waiting for pod (attempt $i/$max_attempts)..."
+        sleep 5
+    done
+    error "Pod(s) matching '$pod_selector' failed to start within expected time"
+}
+
 progress "Setting hostname and updating hosts file"
 # Use alternative to hostnamectl if not available
 if command -v hostnamectl &>/dev/null; then
@@ -187,8 +197,9 @@ apt-get update
 apt-get upgrade -y
 
 progress "Installing essential packages"
+# Note: redis-server removed - now runs in k3s
 install_packages curl wget gnupg2 software-properties-common apt-transport-https ca-certificates \
-    dnsmasq nfs-kernel-server nftables nginx redis-server git htop iotop sysstat \
+    dnsmasq nfs-kernel-server nftables nginx git htop iotop sysstat \
     rng-tools-debian preload irqbalance tuned rsync
 
 progress "Installing k3s"
@@ -322,9 +333,6 @@ table inet filter {
         # Allow Gitea (from k3s pod)
         tcp dport 3000 accept
         
-        # Allow Redis (for k3s and Gitea)
-        tcp dport 6379 accept
-        
         # Allow ping
         icmp type echo-request accept
         icmpv6 type echo-request accept
@@ -393,8 +401,8 @@ progress "Creating k3s namespace and storage"
 # Create gitea namespace
 kubectl create namespace gitea || log "Namespace gitea already exists"
 
-# Create persistent volumes for Gitea
-cat > /tmp/gitea-pv.yaml << 'EOF'
+# Create persistent volumes for Gitea and Redis
+cat > /tmp/gitea-storage.yaml << 'EOF'
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -424,6 +432,20 @@ spec:
     path: /opt/gitea/config
 ---
 apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: redis-data-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  hostPath:
+    path: /opt/redis/data
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gitea-data-pvc
@@ -448,12 +470,109 @@ spec:
     requests:
       storage: 1Gi
   storageClassName: local-storage
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+  namespace: gitea
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: local-storage
 EOF
 
-# Create directories and apply PVs
+# Create directories and apply storage
 mkdir -p /opt/gitea/{data,config}
+mkdir -p /opt/redis/data
 chown -R 1000:1000 /opt/gitea
-apply_k8s_manifest /tmp/gitea-pv.yaml
+chown -R 999:999 /opt/redis  # Redis runs as user 999 in container
+apply_k8s_manifest /tmp/gitea-storage.yaml
+
+progress "Deploying Redis to k3s"
+cat > /tmp/redis-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: gitea
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        command:
+        - redis-server
+        - --appendonly
+        - "yes"
+        - --save
+        - "900 1"
+        - --save
+        - "300 10"
+        - --save
+        - "60 10000"
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: redis-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: gitea
+spec:
+  selector:
+    app: redis
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+  type: ClusterIP
+EOF
+
+apply_k8s_manifest /tmp/redis-deployment.yaml
+
+progress "Waiting for Redis to be ready"
+wait_for_pod "app=redis" "gitea" 30
 
 progress "Deploying Gitea to k3s"
 cat > /tmp/gitea-deployment.yaml << 'EOF'
@@ -501,6 +620,20 @@ spec:
           value: "false"
         - name: GITEA__service__REQUIRE_SIGNIN_VIEW
           value: "false"
+        - name: GITEA__cache__ENABLED
+          value: "true"
+        - name: GITEA__cache__ADAPTER
+          value: "redis"
+        - name: GITEA__cache__HOST
+          value: "redis-service.gitea.svc.cluster.local:6379"
+        - name: GITEA__session__PROVIDER
+          value: "redis"
+        - name: GITEA__session__PROVIDER_CONFIG
+          value: "redis-service.gitea.svc.cluster.local:6379"
+        - name: GITEA__queue__TYPE
+          value: "redis"
+        - name: GITEA__queue__CONN_STR
+          value: "redis://redis-service.gitea.svc.cluster.local:6379/0"
         - name: GITEA__log__MODE
           value: "console"
         - name: GITEA__log__LEVEL
@@ -560,9 +693,9 @@ EOF
 apply_k8s_manifest /tmp/gitea-deployment.yaml
 
 progress "Enabling and configuring services"
-# Enable services (excluding gitea since it's now in k3s)
+# Enable services (redis-server removed since it's now in k3s)
 systemctl daemon-reload
-for service in dnsmasq ssh nfs-kernel-server nftables k3s nginx redis-server rng-tools-debian preload irqbalance; do
+for service in dnsmasq ssh nfs-kernel-server nftables k3s nginx rng-tools-debian preload irqbalance; do
     systemctl enable "$service" || warn "Failed to enable $service"
 done
 
@@ -574,8 +707,8 @@ else
 fi
 
 progress "Starting services"
-# Start services with proper dependency order
-for service in redis-server dnsmasq ssh nfs-kernel-server nftables nginx rng-tools-debian preload irqbalance; do
+# Start services with proper dependency order (redis-server removed)
+for service in dnsmasq ssh nfs-kernel-server nftables nginx rng-tools-debian preload irqbalance; do
     systemctl start "$service" || warn "Failed to start $service"
     wait_for_service "$service"
 done
@@ -587,7 +720,10 @@ wait_for_k3s
 # Export NFS shares
 exportfs -ra || warn "Failed to export NFS shares"
 
-progress "Waiting for Gitea to be ready in k3s"
+progress "Waiting for all pods to be ready"
+log "Waiting for Redis pod to be ready..."
+wait_for_pod "app=redis" "gitea" 30
+
 log "Waiting for Gitea pod to be ready..."
 kubectl wait --for=condition=available --timeout=300s deployment/gitea -n gitea || warn "Gitea deployment may not be fully ready"
 
@@ -612,7 +748,7 @@ log "Post-install configuration completed successfully!"
 # Verify critical services
 log "Verifying critical services..."
 FAILED_SERVICES=()
-CRITICAL_SERVICES=(dnsmasq ssh nfs-kernel-server nftables nginx redis-server k3s)
+CRITICAL_SERVICES=(dnsmasq ssh nfs-kernel-server nftables nginx k3s)
 
 for service in "${CRITICAL_SERVICES[@]}"; do
     if ! systemctl is-active --quiet "$service"; then
@@ -620,20 +756,24 @@ for service in "${CRITICAL_SERVICES[@]}"; do
     fi
 done
 
-# Verify Gitea in k3s
+# Verify k3s deployments
+if ! kubectl get deployment redis -n gitea &>/dev/null; then
+    FAILED_SERVICES+=("redis-k3s")
+fi
+
 if ! kubectl get deployment gitea -n gitea &>/dev/null; then
     FAILED_SERVICES+=("gitea-k3s")
 fi
 
 if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
     warn "Some services failed to start: ${FAILED_SERVICES[*]}"
-    warn "Check logs with: journalctl -u <service_name> or kubectl logs -n gitea deployment/gitea"
+    warn "Check logs with: journalctl -u <service_name> or kubectl logs -n gitea deployment/<deployment_name>"
 else
     log "All critical services are running successfully!"
 fi
 
 progress "Cleaning up temporary files"
-rm -f /tmp/gitea-*.yaml
+rm -f /tmp/gitea-*.yaml /tmp/redis-*.yaml
 
 # Clean up first-boot service
 if [[ -f /etc/systemd/system/knarr-setup.service ]]; then
@@ -656,7 +796,8 @@ echo "Gitea Direct: http://192.168.1.120:3000"
 echo "NFS Share: /home/heimdall -> 192.168.1.0/24"
 echo "Wildcard DNS: *.dev, *.test, *.star -> 192.168.1.120"
 echo "K3s Status: $(kubectl get nodes --no-headers 2>/dev/null | wc -l) node(s) ready"
-echo "Gitea Pod Status: $(kubectl get pods -n gitea --no-headers 2>/dev/null | grep Running | wc -l) pod(s) running"
+echo "Redis Pod Status: $(kubectl get pods -n gitea -l app=redis --no-headers 2>/dev/null | grep Running | wc -l) pod(s) running"
+echo "Gitea Pod Status: $(kubectl get pods -n gitea -l app=gitea --no-headers 2>/dev/null | grep Running | wc -l) pod(s) running"
 echo "Configuration Backups: $BACKUP_DIR"
 echo "================================"
 
@@ -666,6 +807,8 @@ echo "2. Complete Gitea setup at http://git.knarr.star"
 echo "3. Verify DNS resolution: dig @192.168.1.120 git.knarr.star"
 echo "4. Test NFS mount from another machine"
 echo "5. Configure SSH keys for secure access"
-echo "6. Monitor Gitea with: kubectl logs -n gitea deployment/gitea -f"
+echo "6. Monitor services with:"
+echo "   - kubectl logs -n gitea deployment/gitea -f"
+echo "   - kubectl logs -n gitea deployment/redis -f"
 
 log "Setup completed! System is ready for reboot."
