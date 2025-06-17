@@ -198,103 +198,70 @@ require_sudo "umount \"$BASE_DIR/mount\"" || {
 }
 echo "Unmount of original ISO completed."
 
-# Add preseed.cfg from existing file if it exists
-echo "Starting addition of preseed.cfg to newiso..."
+# Check for preseed.cfg and exit if not found
+echo "Starting addition of preseed.cfg to necessary locations..."
 PRESEED_FILE="$BASE_DIR/preseed.cfg"
-if [ -f "$PRESEED_FILE" ]; then
-  # Copy to multiple locations to ensure it's found
-  cp "$PRESEED_FILE" "$BASE_DIR/newiso/preseed.cfg" || { 
-    echo "Failed to copy preseed.cfg as user, trying with sudo..."
-    require_sudo "cp \"$PRESEED_FILE\" \"$BASE_DIR/newiso/preseed.cfg\" && chown landnull:landnull \"$BASE_DIR/newiso/preseed.cfg\""
+if [ ! -f "$PRESEED_FILE" ]; then
+  echo "Error: $PRESEED_FILE not found!"
+  echo "Please create your preseed.cfg file at $PRESEED_FILE before running this script."
+  echo "Exiting."
+  exit 1
+fi
+
+# Function to safely copy preseed file
+copy_preseed_to() {
+  local dest_dir="$1"
+  local dest_file="$2"
+  local full_path="$dest_dir/$dest_file"
+  
+  # Create directory if it doesn't exist
+  mkdir -p "$dest_dir" 2>/dev/null || {
+    require_sudo "mkdir -p \"$dest_dir\""
+    require_sudo "chown landnull:landnull \"$dest_dir\""
   }
   
-  # Also copy to root directory and other common locations
-  cp "$PRESEED_FILE" "$BASE_DIR/newiso/preseed" 2>/dev/null || true
-  mkdir -p "$BASE_DIR/newiso/debian" 2>/dev/null || true
-  cp "$PRESEED_FILE" "$BASE_DIR/newiso/debian/preseed.cfg" 2>/dev/null || true
-  
-  echo "Preseed file added successfully to multiple locations."
-  echo "Preseed file locations:"
-  echo "  - /cdrom/preseed.cfg"
-  echo "  - /cdrom/preseed"
-  echo "  - /cdrom/debian/preseed.cfg"
-else
-  echo "Warning: $PRESEED_FILE not found, creating a basic preseed template."
-  echo "You should customize this preseed.cfg file for your installation needs."
-  
-  # Create a basic preseed template
-  cat > "$BASE_DIR/newiso/preseed.cfg" << 'PRESEED_EOF'
-# Debian preseed configuration
-# This is a basic template - customize as needed
+  # Copy the file
+  if cp "$PRESEED_FILE" "$full_path" 2>/dev/null; then
+    echo "  ✓ Copied to: $full_path"
+  else
+    require_sudo "cp \"$PRESEED_FILE\" \"$full_path\""
+    require_sudo "chown landnull:landnull \"$full_path\""
+    require_sudo "chmod 644 \"$full_path\""
+    echo "  ✓ Copied to: $full_path (with sudo)"
+  fi
+}
 
-# Localization
-d-i debian-installer/locale string en_US.UTF-8
-d-i debian-installer/language string en
-d-i debian-installer/country string US
+echo "Installing preseed.cfg to all possible locations used by the Debian 12 installer..."
+# Primary location (root of the ISO)
+copy_preseed_to "$BASE_DIR/newiso" "preseed.cfg"                    # /cdrom/preseed.cfg
+# Additional locations for alternative boot entries and common installer paths
+copy_preseed_to "$BASE_DIR/newiso/debian" "preseed.cfg"             # /cdrom/debian/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/install" "preseed.cfg"            # /cdrom/install/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/isolinux" "preseed.cfg"           # /cdrom/isolinux/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/preseed" "preseed.cfg"            # /cdrom/preseed/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/install.amd" "preseed.cfg"        # /cdrom/install.amd/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/install.386" "preseed.cfg"        # /cdrom/install.386/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/firmware" "preseed.cfg"           # /cdrom/firmware/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/boot" "preseed.cfg"               # /cdrom/boot/preseed.cfg
+copy_preseed_to "$BASE_DIR/newiso/boot/grub" "preseed.cfg"          # /cdrom/boot/grub/preseed.cfg
 
-# Keyboard selection
-d-i console-keymaps-at/keymap select us
-d-i keyboard-configuration/xkb-keymap select us
-
-# Network configuration
-d-i netcfg/choose_interface select auto
-d-i netcfg/get_hostname string debian
-d-i netcfg/get_domain string localdomain
-
-# Mirror settings
-d-i mirror/country string manual
-d-i mirror/http/hostname string deb.debian.org
-d-i mirror/http/directory string /debian
-d-i mirror/http/proxy string
-
-# Account setup
-# Root password (use mkpasswd -m sha-512 to generate)
-# d-i passwd/root-password-crypted password $6$rounds=656000$...
-d-i passwd/root-login boolean false
-
-# Create a normal user account
-d-i passwd/user-fullname string Debian User
-d-i passwd/username string user
-# User password (use mkpasswd -m sha-512 to generate)
-# d-i passwd/user-password-crypted password $6$rounds=656000$...
-d-i passwd/user-password password changeme
-d-i passwd/user-password-again password changeme
-
-# Clock and time zone setup
-d-i clock-setup/utc boolean true
-d-i time/zone string US/Eastern
-
-# Partitioning
-d-i partman-auto/method string regular
-d-i partman-auto/choose_recipe select atomic
-d-i partman-partitioning/confirm_write_new_label boolean true
-d-i partman/choose_partition select finish
-d-i partman/confirm boolean true
-d-i partman/confirm_nooverwrite boolean true
-
-# Package selection
-tasksel tasksel/first multiselect standard, desktop
-d-i pkgsel/include string openssh-server
-d-i pkgsel/upgrade select full-upgrade
-
-# Boot loader installation
-d-i grub-installer/only_debian boolean true
-d-i grub-installer/bootdev string default
-
-# Finish installation
-d-i finish-install/reboot_in_progress note
-PRESEED_EOF
-  
-  # Copy to multiple locations
-  cp "$BASE_DIR/newiso/preseed.cfg" "$BASE_DIR/newiso/preseed" 2>/dev/null || true
-  mkdir -p "$BASE_DIR/newiso/debian" 2>/dev/null || true
-  cp "$BASE_DIR/newiso/preseed.cfg" "$BASE_DIR/newiso/debian/preseed.cfg" 2>/dev/null || true
-  
-  echo "Basic preseed template created. Please edit $BASE_DIR/newiso/preseed.cfg before using."
-fi
-echo "Addition of preseed.cfg to newiso completed."
+echo ""
+echo "Preseed file installation completed. File locations:"
+echo "  PRIMARY LOCATION (used by default boot entry):"
+echo "    - /cdrom/preseed.cfg"
+echo "  ALTERNATIVE LOCATIONS (used by alternative boot entries and installer paths):"
+echo "    - /cdrom/debian/preseed.cfg"
+echo "    - /cdrom/install/preseed.cfg"
+echo "    - /cdrom/isolinux/preseed.cfg"
+echo "    - /cdrom/preseed/preseed.cfg"
+echo "    - /cdrom/install.amd/preseed.cfg"
+echo "    - /cdrom/install.386/preseed.cfg"
+echo "    - /cdrom/firmware/preseed.cfg"
+echo "    - /cdrom/boot/preseed.cfg"
+echo "    - /cdrom/boot/grub/preseed.cfg"
 
 # Modify isolinux configuration for auto boot
+echo ""
 echo "Starting modification of boot configuration..."
 
 # Modify BIOS boot configuration (isolinux)
@@ -310,16 +277,61 @@ fi
 # Backup original config
 cp "$BOOT_CONFIG" "$BOOT_CONFIG.backup" 2>/dev/null || true
 
-# Create or modify boot configuration for BIOS
+# Create or modify boot configuration for BIOS with multiple preseed paths
 cat > "$BOOT_CONFIG" << 'EOF'
 default auto-install
 timeout 5
 prompt 0
 
 label auto-install
-  menu label ^Auto-install Debian
+  menu label ^Auto-install Debian (Primary)
   kernel /install.amd/vmlinuz
   append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/preseed.cfg auto=true priority=critical preseed/file=/cdrom/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt1
+  menu label Auto-install Debian (Alt Location 1)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/debian/preseed.cfg auto=true priority=critical preseed/file=/cdrom/debian/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt2
+  menu label Auto-install Debian (Alt Location 2)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/install/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt3
+  menu label Auto-install Debian (Alt Location 3)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/isolinux/preseed.cfg auto=true priority=critical preseed/file=/cdrom/isolinux/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt4
+  menu label Auto-install Debian (Alt Location 4)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/preseed/preseed.cfg auto=true priority=critical preseed/file=/cdrom/preseed/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt5
+  menu label Auto-install Debian (Alt Location 5)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/install.amd/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install.amd/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt6
+  menu label Auto-install Debian (Alt Location 6)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/install.386/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install.386/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt7
+  menu label Auto-install Debian (Alt Location 7)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/firmware/preseed.cfg auto=true priority=critical preseed/file=/cdrom/firmware/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt8
+  menu label Auto-install Debian (Alt Location 8)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/boot/preseed.cfg auto=true priority=critical preseed/file=/cdrom/boot/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+
+label auto-install-alt9
+  menu label Auto-install Debian (Alt Location 9)
+  kernel /install.amd/vmlinuz
+  append vga=788 initrd=/install.amd/initrd.gz file=/cdrom/boot/grub/preseed.cfg auto=true priority=critical preseed/file=/cdrom/boot/grub/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
 
 label manual
   menu label ^Manual install
@@ -343,7 +355,7 @@ if [ -f "$BASE_DIR/newiso/boot/grub/grub.cfg" ]; then
     echo "Could not backup GRUB config, continuing anyway..."
   }
   
-  # Create new GRUB configuration
+  # Create new GRUB configuration with multiple preseed locations
   cat > "$BASE_DIR/newiso/boot/grub/grub.cfg" << 'EOF'
 if loadfont /boot/grub/font.pf2 ; then
   set gfxmode=auto
@@ -358,9 +370,63 @@ set menu_color_highlight=white/blue
 set timeout=5
 set default=0
 
-menuentry "Auto-install Debian" {
+menuentry "Auto-install Debian (Primary)" {
   set background_color=black
   linux    /install.amd/vmlinuz vga=788 file=/cdrom/preseed.cfg auto=true priority=critical preseed/file=/cdrom/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 1)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/debian/preseed.cfg auto=true priority=critical preseed/file=/cdrom/debian/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 2)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/install/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 3)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/isolinux/preseed.cfg auto=true priority=critical preseed/file=/cdrom/isolinux/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 4)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/preseed/preseed.cfg auto=true priority=critical preseed/file=/cdrom/preseed/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 5)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/install.amd/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install.amd/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 6)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/install.386/preseed.cfg auto=true priority=critical preseed/file=/cdrom/install.386/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 7)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/firmware/preseed.cfg auto=true priority=critical preseed/file=/cdrom/firmware/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 8)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/boot/preseed.cfg auto=true priority=critical preseed/file=/cdrom/boot/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
+  initrd   /install.amd/initrd.gz
+}
+
+menuentry "Auto-install Debian (Alt Location 9)" {
+  set background_color=black
+  linux    /install.amd/vmlinuz vga=788 file=/cdrom/boot/grub/preseed.cfg auto=true priority=critical preseed/file=/cdrom/boot/grub/preseed.cfg debian-installer/locale=en_US.UTF-8 console-setup/ask_detect=false keyboard-configuration/xkb-keymap=us quiet ---
   initrd   /install.amd/initrd.gz
 }
 
@@ -376,16 +442,17 @@ menuentry "Advanced options" --class advanced {
 }
 EOF
 
-  echo "GRUB configuration updated for UEFI boot."
+  echo "GRUB configuration updated for UEFI boot with multiple preseed locations."
 fi
 
 echo "Modification of boot configuration completed."
 
 # Create bootable ISO image with proper UEFI support
+echo ""
 echo "Starting creation of bootable ISO image with UEFI support..."
 
 # Verify required files exist
-if [ -f "$BASE_DIR/newiso/isolinux/isolinux.bin" ]; then
+if [ ! -f "$BASE_DIR/newiso/isolinux/isolinux.bin" ]; then
   echo "Warning: isolinux.bin not found, BIOS boot may not work"
 fi
 
@@ -514,6 +581,7 @@ else
 fi
 
 # Prompt user to burn to USB
+echo ""
 echo "Starting USB burn process..."
 read -p "Would you like to burn the ISO to a USB drive? [Y/n] " -r
 echo
@@ -568,3 +636,9 @@ echo "- Try disabling Secure Boot in BIOS/UEFI settings"
 echo "- Verify the USB port is working (try different ports)"
 echo "- Some systems require the USB drive to be formatted as GPT first"
 echo "- Check if 'Fast Boot' or 'Ultra Fast Boot' is disabled in BIOS"
+echo ""
+echo "Troubleshooting preseed issues:"
+echo "- If the installer fails to find preseed.cfg, try selecting different 'Auto-install Debian' options from the boot menu"
+echo "- Verify the preseed.cfg file is not empty and contains valid Debian preseed directives"
+echo "- Check the installer logs (Alt+F4 during installation) for specific errors"
+echo "- Ensure the preseed.cfg file uses Unix line endings (LF, not CRLF)"
