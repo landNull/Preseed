@@ -7,7 +7,7 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 
 # Define base directory
-BASE_DIR=/home/landnull/Downloads/Distros/Debian/Preseed
+BASE_DIR=/home/landnull/apps/Preseed
 
 # Function to request and execute with sudo privileges
 require_sudo() {
